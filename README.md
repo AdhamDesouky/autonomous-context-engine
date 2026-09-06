@@ -6,138 +6,166 @@
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-Agentic-black)
 
-A production-grade, self-correcting Retrieval-Augmented Generation (RAG) architecture. This system moves beyond linear RAG implementations by utilizing a cyclic LangGraph state machine with autonomous guardrails to strictly prevent hallucinations, evaluate its own utility, and dynamically rewrite failed queries.
+A research-paper question-answering prototype built around a cyclic LangGraph workflow. It combines hybrid dense and sparse retrieval, cross-encoder reranking, document relevance grading, query rewriting, grounded answer generation, and post-generation LLM checks.
 
-## 🧠 System Architecture
+The project is designed for local experimentation and evaluation. It does not currently provide authentication, document uploads, citations in API responses, streaming, health checks, or production-grade guarantees against hallucination. When the retry limits are exhausted, the agent returns its best available answer.
 
-The pipeline implements a **Corrective Self-RAG** workflow. The agent evaluates retrieved context and its own generated drafts in real-time, looping back to rewrite or regenerate until strict quality thresholds are met.
+## System Architecture
 
 ```mermaid
 graph TD
-    %% Define Styles
-    classDef user fill:#2b3137,stroke:#24292e,stroke-width:2px,color:#fff
-    classDef retrieve fill:#005cc5,stroke:#0366d6,stroke-width:2px,color:#fff
-    classDef grade fill:#d73a49,stroke:#cb2431,stroke-width:2px,color:#fff
-    classDef generate fill:#28a745,stroke:#22863a,stroke-width:2px,color:#fff
-    classDef rewrite fill:#6f42c1,stroke:#5a32a3,stroke-width:2px,color:#fff
-
-    %% Nodes
-    START((User Query)):::user
-    R1[Hybrid RRF Search<br/>Qdrant]:::retrieve
-    R2[Cross-Encoder Reranker<br/>MS-MARCO]:::retrieve
-    G1{Grade Documents}:::grade
-    RE[Rewrite Query]:::rewrite
-    GEN[Generate Draft]:::generate
-    G2{Hallucination Grader}:::grade
-    G3{Utility Grader}:::grade
-    END((Final Output)):::user
-
-    %% Edges
-    START --> R1
-    R1 -->|15 Candidates| R2
-    R2 -->|Top 3 Chunks| G1
-    G1 -- Zero Relevant --> RE
-    RE -- Optimized Query --> R1
-    G1 -- Relevant Context --> GEN
-    GEN --> G2
-    G2 -- Hallucination Detected --> GEN
-    G2 -- Factually Grounded --> G3
-    G3 -- Unhelpful Answer --> GEN
-    G3 -- Useful Answer --> END
+        START((Question)) --> SEARCH[Hybrid Qdrant Search]
+        SEARCH --> RERANK[Cross-Encoder Rerank]
+        RERANK --> GRADE{Relevant chunks?}
+        GRADE -- No, up to 2 rewrites --> REWRITE[Rewrite query]
+        REWRITE --> SEARCH
+        GRADE -- Yes or retry limit --> GENERATE[Generate grounded answer]
+        GENERATE --> FACTS{Grounded?}
+        FACTS -- No, up to 3 generations --> GENERATE
+        FACTS -- Yes --> USEFUL{Answers question?}
+        USEFUL -- No, up to 3 generations --> GENERATE
+        USEFUL -- Yes --> END((Answer))
 ```
 
+The API initializes the agent during FastAPI startup. Each request retrieves up to 15 candidates with Qdrant Reciprocal Rank Fusion, reranks them, keeps the best 3 chunks, and runs the grading and generation loop. The frontend displays a collapsed status panel while the request is running; that panel is UI feedback and is not a server-side execution trace.
 
-## ⚙️ Technical Stack
+## Technical Stack
 
-| Layer              | Component             | Implementation Details                                                           |
-| ------------------ | --------------------- | -------------------------------------------------------------------------------- |
-| **Orchestration**  | LangGraph & LangChain | Manages the cyclic state machine, tracking generation retries and context state. |
-| **LLM Engine**     | Groq (`gpt-oss-20b`)  | High-speed inference for both generation and LLM-as-a-Judge grading nodes.       |
-| **Vector Storage** | Qdrant                | Local containerized vector database utilizing Reciprocal Rank Fusion (RRF).      |
-| **Embeddings**     | FastEmbed             | Dual-encoder setup: `BGE-Small` (Dense) + `SPLADE` (Sparse).                     |
-| **Reranking**      | HuggingFace           | `ms-marco-MiniLM-L-6-v2` Cross-Encoder for high-precision semantic sorting.      |
-| **Backend API**    | FastAPI               | Asynchronous REST API serving the agent execution graph.                         |
-| **Frontend UI**    | Streamlit             | Custom reactive chat interface with a compressible execution trace state.        |
+| Layer          | Implementation                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| Orchestration  | LangGraph and LangChain                                                                          |
+| LLM            | Groq OpenAI-compatible endpoint using `openai/gpt-oss-20b`                                       |
+| Vector storage | Embedded local Qdrant at `data/qdrant_db`                                                        |
+| Embeddings     | FastEmbed `BAAI/bge-small-en-v1.5` dense vectors and `prithivida/Splade_PP_en_v1` sparse vectors |
+| Reranking      | FastEmbed `Xenova/ms-marco-MiniLM-L-6-v2` cross-encoder                                          |
+| PDF parsing    | Docling layout conversion and hierarchical chunking                                              |
+| Backend        | FastAPI and Uvicorn                                                                              |
+| Frontend       | Streamlit and Requests                                                                           |
+| Evaluation     | DeepEval faithfulness and answer-relevancy metrics with a Groq judge                             |
 
----
+## Retrieval And Guardrails
 
-## 🔬 Advanced Engineering Features
+1. **Hybrid retrieval:** dense and sparse searches are fused with Qdrant RRF. The agent requests 15 candidates.
+2. **Reranking:** a cross-encoder scores the candidates and supplies only the top 3 chunks to the next stage.
+3. **Document grading:** an LLM drops chunks that do not help answer the question.
+4. **Query rewriting:** if no relevant chunks remain, the LLM rewrites the question in academic terminology and retries retrieval at most twice.
+5. **Grounded generation:** the answer prompt instructs the LLM to use only the retrieved chunks.
+6. **Answer grading:** hallucination and utility graders can route back to generation. Generation is capped at three attempts, after which the latest answer is returned.
 
-### 1. Two-Stage Retrieval (High Recall + High Precision)
+## Quickstart With Docker
 
-Standard RAG suffers from the "Lost in the Middle" problem. This architecture solves it by decoupling retrieval from context injection:
+Prerequisites: Docker Desktop with Compose support and a Groq API key.
 
-- **Stage 1 (Recall):** Qdrant executes a hybrid dense/sparse RRF search to retrieve 15 broad candidate chunks.
-- **Stage 2 (Precision):** A transformer-based Cross-Encoder reranks all 15 chunks against the specific user query, passing only the top 3 highest-scoring chunks to the LLM.
+From the repository root, create `backend/.env` with:
 
-### 2. Autonomous Guardrails (Self-RAG)
+```dotenv
+GROQ_API_KEY=your_api_key_here
+```
 
-The system refuses to output unverified data. Post-generation, the draft is intercepted by two distinct LLM evaluator nodes:
-
-- **Hallucination Grader:** Mathematically verifies that every claim in the draft exists in the retrieved vectors.
-- **Utility Grader:** Verifies that the grounded draft actually answers the user's initial prompt.
-- _Failure Action:_ If either fails, the graph routes back to the generator with feedback.
-
-### 3. Query Decomposition & Rewriting (CRAG)
-
-If the Cross-Encoder and Document Grader determine the retrieved chunks are irrelevant, the agent intercepts the failure. Instead of returning an error, it routes to a `rewrite_query` node to translate the user's prompt into academic terminology and re-executes the search.
-
-### 4. MLOps Validation
-
-The pipeline is strictly unit-tested using **DeepEval**, acting as an objective LLM-as-a-Judge.
-
-- **Faithfulness Score:** `1.0/1.0` (Zero Hallucinations)
-- **Answer Relevancy Score:** `1.0/1.0` (Zero Tangents)
-
----
-
-## 🚀 Quickstart
-
-The entire pipeline is fully containerized. Requires Docker and Docker Compose.
-
-### 1. Clone & Configure
+Then start the two application containers:
 
 ```bash
-git clone [https://github.com/yourusername/enterprise-agentic-rag.git](https://github.com/yourusername/enterprise-agentic-rag.git)
-cd enterprise-agentic-rag
-
-# Add your Groq API Key
-echo "GROQ_API_KEY=your_api_key_here" > backend/.env
-
+docker compose up --build
 ```
 
-### 2. Deploy the Stack
+Open:
+
+- Streamlit UI: http://localhost:8501
+- FastAPI Swagger UI: http://localhost:8000/docs
+
+Compose starts only the backend and frontend. Qdrant is not a separate container; the backend uses Qdrant's embedded local client. The Compose file mounts `./data` at `/app/data`, but the current path calculation in the backend resolves its data directory differently inside the image. For dependable indexing and local development, use the native workflow below or update that path handling before relying on a Docker-only deployment.
+
+## Native Setup And Indexing
+
+The repository includes the Attention Is All You Need PDF, its parsed Markdown, and a local Qdrant database. Indexing is manual; application startup does not parse or index documents.
+
+From the repository root, create a Python 3.10 environment and install the backend dependencies:
 
 ```bash
-# Build and launch FastAPI backend, Streamlit frontend, and Qdrant volume
-docker-compose up --build
-
+python -m venv .venv
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+pip install -r backend/requirements.txt
 ```
 
-### 3. Access the Interface
+The DeepEval test also requires its separate package:
 
-- **Streamlit UI:** `http://localhost:8501`
-- **FastAPI Swagger Docs:** `http://localhost:8000/docs`
+```bash
+pip install deepeval
+```
 
----
+Set `GROQ_API_KEY` in `backend/.env`, then run the indexing script from the repository root:
 
-## 📁 Repository Structure
+```bash
+python -m backend.app.retrieval.vector_store
+```
+
+The script parses `data/sample_papers/attention_is_all_you_need.pdf`, creates hierarchical chunks, embeds them, and upserts them into the `ai_research_papers` collection. To inspect Docling parsing without indexing, run:
+
+```bash
+python -m backend.app.engine.parser
+```
+
+Run the backend and frontend separately when using the native workflow:
+
+```bash
+uvicorn app.main:app --app-dir backend --reload --port 8000
+streamlit run frontend/app.py
+```
+
+The frontend defaults to `http://localhost:8000/api/v1/research/query`. Set `API_URL` to override it, for example when the frontend runs in a container.
+
+## API
+
+### `POST /api/v1/research/query`
+
+Request bodies must contain a query of at least five characters:
+
+```json
+{
+  "query": "What optimizer was used?"
+}
+```
+
+Successful responses contain only the final answer:
+
+```json
+{
+  "answer": "..."
+}
+```
+
+Typical errors are `422` for invalid request data, `503` when the startup agent is unavailable, and `500` when graph execution fails. There is currently no upload, indexing, citation, trace, or health endpoint.
+
+## Evaluation
+
+`tests/test_agent.py` is a live integration/evaluation test rather than a deterministic unit test. It initializes the real agent, uses the indexed Qdrant data and downloaded embedding/reranker models, and evaluates the result with DeepEval using a Groq judge. Both metrics use a passing threshold of `0.7`; scores depend on the model response and runtime state.
+
+Run it from the repository root after indexing the data and configuring `GROQ_API_KEY`:
+
+```bash
+pytest tests/test_agent.py
+```
+
+The test requires network access for the Groq API and model downloads. No fixed score is guaranteed by the repository.
+
+## Repository Structure
 
 ```text
 ├── backend/
 │   ├── app/
-│   │   ├── agent/         # LangGraph state machine, graders, routers
-│   │   ├── ingestion/     # PDF chunking and embedding pipelines
-│   │   ├── retrieval/     # Hybrid Qdrant + Cross-Encoder logic
-│   │   └── main.py        # FastAPI server entry point
+│   │   ├── agent/graph.py          # LangGraph workflow, graders, and routers
+│   │   ├── api/v1/                 # API package namespace
+│   │   ├── engine/parser.py        # Docling PDF parsing and chunking
+│   │   ├── retrieval/vector_store.py # Local Qdrant and hybrid retrieval
+│   │   └── main.py                 # FastAPI application and endpoint
 │   ├── Dockerfile
 │   └── requirements.txt
-├── frontend/
-│   ├── app.py             # Streamlit reactive chat UI
-│   ├── Dockerfile
-│   └── requirements.txt
-├── tests/
-│   └── test_agent.py      # DeepEval MLOps benchmark suite
-└── docker-compose.yml
-
+├── data/
+│   ├── qdrant_db/                  # Embedded Qdrant collection data
+│   └── sample_papers/               # Sample PDF and parsed Markdown
+├── frontend/app.py                 # Streamlit chat interface
+├── tests/test_agent.py             # DeepEval integration evaluation
+├── docker-compose.yml
+└── README.md
 ```
