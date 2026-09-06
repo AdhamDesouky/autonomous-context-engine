@@ -1,6 +1,3 @@
-Copy and paste this directly into your `README.md`. It uses Mermaid.js to render a native architecture graph on GitHub, replaces dense text with clean tables, and details the exact engineering mechanisms.
-
-````markdown
 # Enterprise Agentic RAG Pipeline
 
 ![Python](https://img.shields.io/badge/Python-3.10-blue?logo=python&logoColor=white)
@@ -10,8 +7,6 @@ Copy and paste this directly into your `README.md`. It uses Mermaid.js to render
 ![LangGraph](https://img.shields.io/badge/LangGraph-Agentic-black)
 
 A production-grade, self-correcting Retrieval-Augmented Generation (RAG) architecture. This system moves beyond linear RAG implementations by utilizing a cyclic LangGraph state machine with autonomous guardrails to strictly prevent hallucinations, evaluate its own utility, and dynamically rewrite failed queries.
-
----
 
 ## 🧠 System Architecture
 
@@ -50,9 +45,7 @@ graph TD
     G3 -- Unhelpful Answer --> GEN
     G3 -- Useful Answer --> END
 ```
-````
 
----
 
 ## ⚙️ Technical Stack
 
@@ -146,9 +139,5 @@ docker-compose up --build
 ├── tests/
 │   └── test_agent.py      # DeepEval MLOps benchmark suite
 └── docker-compose.yml
-
-```
-
-```
 
 ```
