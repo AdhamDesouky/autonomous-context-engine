@@ -23,7 +23,7 @@ from app.agent.graph import ResearchAgent
 # 1. Use the configured Gemini endpoint as the DeepEval judge.
 class GeminiJudge(DeepEvalBaseLLM):
     def __init__(self):
-        self.model_name = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
+        self.model_name = os.getenv("GOOGLE_MODEL", "gemini-3.7-flash")
         self.chat_model = ChatGoogleGenerativeAI(
             google_api_key=os.getenv("GOOGLE_API_KEY"),
             model=self.model_name,

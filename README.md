@@ -1,4 +1,4 @@
-# Enterprise Agentic RAG Pipeline
+# Autonomous Context Engine (ACE)
 
 ![Python](https://img.shields.io/badge/Python-3.10-blue?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi&logoColor=white)
@@ -6,42 +6,49 @@
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-Agentic-black)
 
-A research-paper question-answering prototype built around a cyclic LangGraph workflow. It combines hybrid dense and sparse retrieval, cross-encoder reranking, document relevance grading, query rewriting, grounded answer generation, and post-generation LLM checks.
+An agentic research-document question-answering system built around a cyclic LangGraph workflow. It combines hybrid dense and sparse retrieval, cross-encoder reranking, document relevance grading, query rewriting, grounded answer generation, citations, read-only MCP tools, and post-generation LLM checks.
 
 The project is designed for local experimentation and evaluation. It does not currently provide authentication or streaming. Query responses include the retrieved source filename, heading, snippet, and page when Docling exposes page provenance. When the retry limits are exhausted, the agent returns its best available answer.
 
 ## System Architecture
 
 ```mermaid
-graph TD
-        START((Question)) --> SEARCH[Hybrid Qdrant Search]
-        SEARCH --> RERANK[Cross-Encoder Rerank]
-        RERANK --> GRADE{Relevant chunks?}
-        GRADE -- No, up to 2 rewrites --> REWRITE[Rewrite query]
-        REWRITE --> SEARCH
-        GRADE -- Yes or retry limit --> GENERATE[Generate grounded answer]
-        GENERATE --> FACTS{Grounded?}
-        FACTS -- No, up to 3 generations --> GENERATE
-        FACTS -- Yes --> USEFUL{Answers question?}
-        USEFUL -- No, up to 3 generations --> GENERATE
-        USEFUL -- Yes --> END((Answer))
+flowchart TD
+    CLIENT[Client / Streamlit UI] --> API[FastAPI API]
+    UPLOAD[PDF upload] --> API
+    API --> GRAPH[LangGraph agent]
+    GRAPH --> RETRIEVE[Qdrant hybrid retrieval]
+    RETRIEVE --> RRF[Dense BGE + sparse SPLADE<br/>Qdrant RRF]
+    RRF --> RERANK[MS MARCO cross-encoder<br/>top 3 chunks]
+    RERANK --> GRADE{Relevant context?}
+    GRADE -- No: max 2 rewrites --> REWRITE[Rewrite query]
+    REWRITE --> RETRIEVE
+    GRADE -- Yes or retry limit --> GENERATE[Grounded generation]
+    GENERATE --> CHECK{Grounded and useful?}
+    CHECK -- No: max 3 generations --> GENERATE
+    CHECK -- Yes --> RESPONSE[Answer + citations]
+    API --> INGEST[Docling parse and index]
+    INGEST --> RETRIEVE
+    MCP[Read-only MCP server] --> RETRIEVE
+    GENERATE --> LLM[Gemini primary<br/>Gemini fallback keys / Groq option]
+    CHECK --> LLM
 ```
 
-The API initializes the agent during FastAPI startup. Each request retrieves up to 15 candidates with Qdrant Reciprocal Rank Fusion, reranks them, keeps the best 3 chunks, and runs the grading and generation loop. The frontend displays a collapsed status panel while the request is running; that panel is UI feedback and is not a server-side execution trace.
+The API initializes the agent during FastAPI startup. Each request retrieves up to 15 candidates with Qdrant Reciprocal Rank Fusion, reranks them, keeps the best 3 chunks, and runs the grading and generation loop. Gemini credentials are tried in order when `GOOGLE_API_KEYS` is configured. The frontend displays a collapsed status panel while the request is running; that panel is UI feedback and is not a server-side execution trace.
 
 ## Technical Stack
 
 | Layer          | Implementation                                                                                   |
 | -------------- | ------------------------------------------------------------------------------------------------ |
 | Orchestration  | LangGraph and LangChain                                                                          |
-| LLM            | Groq OpenAI-compatible endpoint using `openai/gpt-oss-20b`                                       |
+| LLM            | Google Gemini by default, with optional Groq OpenAI-compatible endpoint                          |
 | Vector storage | Embedded local Qdrant at `data/qdrant_db`                                                        |
 | Embeddings     | FastEmbed `BAAI/bge-small-en-v1.5` dense vectors and `prithivida/Splade_PP_en_v1` sparse vectors |
 | Reranking      | FastEmbed `Xenova/ms-marco-MiniLM-L-6-v2` cross-encoder                                          |
 | PDF parsing    | Docling layout conversion and hierarchical chunking                                              |
 | Backend        | FastAPI and Uvicorn                                                                              |
 | Frontend       | Streamlit and Requests                                                                           |
-| Evaluation     | DeepEval faithfulness and answer-relevancy metrics with a Groq judge                             |
+| Evaluation     | DeepEval faithfulness and answer-relevancy metrics with a configurable Gemini/Groq judge          |
 
 ## Retrieval And Guardrails
 
@@ -59,7 +66,7 @@ Prerequisites: Docker Desktop with Compose support and a Google Gemini API key.
 From the repository root, create `backend/.env` with:
 
 ```dotenv
-GOOGLE_API_KEY=your_api_key_here
+GOOGLE_API_KEY=your_gemini_api_key_here
 ```
 
 Then start the two application containers:
@@ -88,17 +95,17 @@ python -m venv .venv
 pip install -r backend/requirements.txt
 ```
 
-The DeepEval test also requires its separate package:
-
-```bash
-pip install deepeval
-```
-
 Set `GOOGLE_API_KEY` in `backend/.env`, then run the indexing script from the repository root:
 
 ```bash
 python -m backend.app.retrieval.vector_store
 ```
+
+`GOOGLE_API_KEY` must be a Gemini API key that succeeds with the Google
+Generative Language API. Optional fallback keys can be supplied through
+`GOOGLE_API_KEYS` as a comma-separated list. Create or manage keys in
+[Google AI Studio](https://aistudio.google.com/apikey). Keep the key in the
+ignored `backend/.env` file and never commit it.
 
 The script parses `data/sample_papers/attention_is_all_you_need.pdf`, creates hierarchical chunks, embeds them, and upserts them into the `ai_research_papers` collection. To inspect Docling parsing without indexing, run:
 
@@ -188,23 +195,37 @@ pytest tests/test_agent.py
 
 The test requires network access for the Google API and model downloads. No fixed score is guaranteed by the repository. The deterministic API, citation, indexing, and MCP tests do not require an API key.
 
+The repository currently collects 11 tests: 10 deterministic tests and 1 live
+DeepEval evaluation. The live test depends on provider availability, quota,
+network access, indexed data, and downloaded models; it is not counted as a
+deterministic regression result.
+
 ## LLM Provider Configuration
 
-Gemini is the default provider for both answer generation and critique:
+Gemini is the default provider for both answer generation and critique. The
+primary key is tried first; optional comma-separated fallback keys are used
+when the primary request fails, including quota/rate-limit and transient
+service errors:
 
 ```dotenv
 GOOGLE_API_KEY=your_key
-GOOGLE_MODEL=gemini-2.5-flash
+GOOGLE_API_KEYS=your_backup_key_1,your_backup_key_2
+GOOGLE_MODEL=gemini-3.7-flash
 GENERATION_PROVIDER=google
 CRITIQUE_PROVIDER=google
 ```
+
+Use separate keys from the same project only as a quota-resilience mechanism;
+they do not create additional quota for a project-level quota limit. For
+independent capacity, configure a separate project with its own billing and
+quota, or use the Groq critique provider.
 
 The pipeline also supports a dual-provider setup. In this mode, Gemini generates and rewrites answers while Groq independently grades relevance, grounding, and answer utility:
 
 ```dotenv
 GOOGLE_API_KEY=your_gemini_key
 GROQ_API_KEY=your_groq_key
-GOOGLE_MODEL=gemini-2.5-flash
+GOOGLE_MODEL=gemini-3.7-flash
 GROQ_MODEL=openai/gpt-oss-20b
 GENERATION_PROVIDER=google
 CRITIQUE_PROVIDER=groq
@@ -219,16 +240,31 @@ This separates generation from evaluation so the same model does not approve its
 │   ├── app/
 │   │   ├── agent/graph.py          # LangGraph workflow, graders, and routers
 │   │   ├── api/v1/                 # API package namespace
+│   │   ├── core/llm.py             # Gemini/Groq providers and key failover
 │   │   ├── engine/parser.py        # Docling PDF parsing and chunking
+│   │   ├── mcp/server.py           # Read-only MCP tools
 │   │   ├── retrieval/vector_store.py # Local Qdrant and hybrid retrieval
-│   │   └── main.py                 # FastAPI application and endpoint
+│   │   ├── schemas/research.py     # Query, citation, and indexing schemas
+│   │   └── main.py                 # FastAPI application and endpoints
+│   ├── .env.example                # Safe local configuration template
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── data/
 │   ├── qdrant_db/                  # Embedded Qdrant collection data
 │   └── sample_papers/               # Sample PDF and parsed Markdown
 ├── frontend/app.py                 # Streamlit chat interface
-├── tests/test_agent.py             # DeepEval integration evaluation
+├── tests/                          # Deterministic and live evaluation tests
 ├── docker-compose.yml
 └── README.md
 ```
+
+## Legacy Project Status
+
+The earlier `autonomous_context_engine` project was used as a migration source.
+Its useful capabilities were adapted into this repository, while the current
+ACE architecture uses FastAPI, embedded Qdrant, Docling, LangGraph, provider
+configuration, citations, and read-only MCP. The legacy project still contains
+an independent Chroma database and source tree, so keep it as an archive until
+you have copied any remaining documents or history you want to preserve.
+After that archive check, it is safe to delete the legacy working directory;
+do not delete it as a prerequisite for renaming this project.

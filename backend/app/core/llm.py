@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.runnables import Runnable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
@@ -20,13 +20,31 @@ def _required_setting(name: str) -> str:
     return value
 
 
-def create_chat_model(provider: Provider, *, role: str) -> BaseChatModel:
+def _google_api_keys() -> list[str]:
+    primary = _required_setting("GOOGLE_API_KEY")
+    backups = [
+        key.strip()
+        for key in os.getenv("GOOGLE_API_KEYS", "").split(",")
+        if key.strip()
+    ]
+    return list(dict.fromkeys([primary, *backups]))
+
+
+def create_chat_model(provider: Provider, *, role: str) -> Runnable:
     if provider == "google":
-        return ChatGoogleGenerativeAI(
-            google_api_key=_required_setting("GOOGLE_API_KEY"),
-            model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
-            temperature=0,
-            max_retries=2,
+        model_name = os.getenv("GOOGLE_MODEL", "gemini-3.7-flash")
+        models = [
+            ChatGoogleGenerativeAI(
+                google_api_key=api_key,
+                model=model_name,
+                temperature=0,
+                max_retries=0,
+            )
+            for api_key in _google_api_keys()
+        ]
+        return models[0].with_fallbacks(
+            models[1:],
+            exceptions_to_handle=(Exception,),
         )
 
     if provider == "groq":
