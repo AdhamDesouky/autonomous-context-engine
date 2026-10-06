@@ -6,47 +6,53 @@
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-Agentic-black)
 
-ACE is a research-document question-answering system built with LangGraph. It uses hybrid retrieval, reranking, relevance grading, query rewriting, and grounded answer generation.
-
-Designed for local experimentation. Authentication and streaming are not currently included.
-
-## Features
-
-- Hybrid dense and sparse retrieval with Qdrant RRF
-- Cross-encoder reranking
-- LLM-based document and answer grading
-- Automatic query rewriting and retry limits
-- PDF upload, parsing, and indexing with Docling
-- FastAPI backend and Streamlit frontend
-- Read-only MCP server for searching indexed documents
-- Gemini by default, with optional Groq support
+ACE is a research-document question-answering system built with LangGraph. It combines hybrid retrieval, reranking, document grading, query rewriting, and grounded generation.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    UI[Streamlit UI] --> API[FastAPI]
+    UI[Streamlit UI] --> API[FastAPI API]
+    UPLOAD[PDF upload] --> API
     API --> GRAPH[LangGraph agent]
     GRAPH --> RETRIEVE[Qdrant hybrid retrieval]
-    RETRIEVE --> RERANK[Cross-encoder reranking]
-    RERANK --> GRADE[Relevance grading]
-    GRADE -->|Rewrite if needed| RETRIEVE
+    RETRIEVE --> RRF[Dense + sparse RRF]
+    RRF --> RERANK[Cross-encoder reranking]
+    RERANK --> GRADE{Relevant context?}
+    GRADE -->|Rewrite up to 2 times| RETRIEVE
     GRADE --> GENERATE[Grounded generation]
-    GENERATE --> CHECK[Answer grading]
+    GENERATE --> CHECK{Grounded and useful?}
+    CHECK -->|Retry up to 3 times| GENERATE
     CHECK --> RESPONSE[Answer + citations]
-    API --> INGEST[Docling PDF indexing]
+    API --> INGEST[Docling parse and index]
+    INGEST --> RETRIEVE
+    MCP[Read-only MCP server] --> RETRIEVE
+    GENERATE --> LLM[Gemini or Groq]
+    CHECK --> LLM
 ```
+
+## Key Features
+
+- Hybrid dense and sparse retrieval using embedded Qdrant
+- Cross-encoder reranking of retrieved chunks
+- LLM-based relevance, grounding, and answer grading
+- Automatic query rewriting with retry limits
+- PDF parsing and hierarchical chunking with Docling
+- FastAPI backend, Streamlit frontend, and read-only MCP server
+- Google Gemini by default, with optional Groq support
 
 ## Stack
 
-- **Orchestration:** LangGraph and LangChain
-- **LLM:** Google Gemini or Groq
-- **Storage:** Embedded local Qdrant in `data/qdrant_db`
-- **Embeddings:** BGE dense vectors and SPLADE sparse vectors
-- **Reranking:** MS MARCO cross-encoder
-- **Backend:** FastAPI and Uvicorn
-- **Frontend:** Streamlit
-- **Evaluation:** DeepEval
+| Area | Technology |
+| --- | --- |
+| Orchestration | LangGraph, LangChain |
+| LLM | Google Gemini or Groq |
+| Vector store | Embedded Qdrant at `data/qdrant_db` |
+| Embeddings | BGE dense and SPLADE sparse vectors |
+| Reranking | MS MARCO cross-encoder |
+| PDF parsing | Docling |
+| Backend / frontend | FastAPI / Streamlit |
+| Evaluation | DeepEval |
 
 ## Quickstart with Docker
 
@@ -62,9 +68,12 @@ Start the application:
 docker compose up --build
 ```
 
-Open the UI at http://localhost:8501 or the API docs at http://localhost:8000/docs.
+Open:
 
-## Native Setup
+- Streamlit: http://localhost:8501
+- FastAPI docs: http://localhost:8000/docs
+
+## Native Setup and Indexing
 
 ```bash
 python -m venv .venv
@@ -73,7 +82,7 @@ python -m venv .venv
 pip install -r backend/requirements.txt
 ```
 
-Add `GOOGLE_API_KEY` to `backend/.env`, then index the sample document:
+Add `GOOGLE_API_KEY` to `backend/.env`, then index the sample paper:
 
 ```bash
 python -m backend.app.retrieval.vector_store
@@ -98,30 +107,30 @@ streamlit run frontend/app.py
 
 Returns an answer with source filenames, headings, pages, and snippets.
 
-### Upload a document
+### Upload a PDF
 
 `POST /api/v1/research/documents`
 
-Upload a PDF using the multipart field `file`. The document is parsed and added to the Qdrant collection.
+Upload one PDF using the multipart field `file`. It is parsed and indexed in Qdrant.
 
 ## MCP Server
 
-Run the read-only MCP server from `backend`:
+Run from the `backend` directory:
 
 ```bash
 python -m app.mcp.server
 ```
 
-Available tools:
+Tools:
 
 - `query_documentation(query, num_results)`
 - `list_indexed_documents()`
 
-The server does not provide shell access, arbitrary code execution, filesystem writes, or unrestricted network access.
+The server is read-only and does not provide shell access, arbitrary code execution, filesystem writes, or unrestricted network access.
 
-## Provider Configuration
+## Configuration
 
-Gemini is the default provider. Optional fallback keys and Groq critique support can be configured in `backend/.env`:
+Gemini is the default provider. Optional fallback keys and Groq support:
 
 ```dotenv
 GOOGLE_API_KEY=your_gemini_key
@@ -137,26 +146,25 @@ Never commit real API keys.
 
 ## Evaluation
 
-Run the live evaluation after indexing documents and configuring an API key:
+After indexing documents and configuring an API key:
 
 ```bash
 pytest tests/test_agent.py
 ```
 
-The live test requires network access, provider quota, indexed data, and downloaded models.
+The live evaluation requires network access, provider quota, indexed data, and downloaded models.
 
 ## Repository Structure
 
 ```text
-backend/app/agent/graph.py              # LangGraph workflow
-backend/app/core/llm.py                 # LLM providers and failover
-backend/app/engine/parser.py            # PDF parsing and chunking
-backend/app/mcp/server.py               # Read-only MCP tools
-backend/app/retrieval/vector_store.py   # Qdrant retrieval and indexing
-backend/app/schemas/research.py         # API schemas
-backend/app/main.py                     # FastAPI application
-frontend/app.py                         # Streamlit UI
-data/                                   # PDFs and Qdrant data
-tests/                                  # Test suite
-docker-compose.yml                      # Container configuration
+backend/app/agent/graph.py            # LangGraph workflow
+backend/app/core/llm.py               # LLM providers and failover
+backend/app/engine/parser.py          # PDF parsing and chunking
+backend/app/mcp/server.py             # Read-only MCP tools
+backend/app/retrieval/vector_store.py # Qdrant retrieval and indexing
+backend/app/main.py                   # FastAPI application
+frontend/app.py                       # Streamlit UI
+data/                                # PDFs and Qdrant data
+tests/                               # Test suite
+docker-compose.yml                   # Container configuration
 ```
