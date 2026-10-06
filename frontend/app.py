@@ -43,6 +43,37 @@ st.markdown('<h1 class="title-gradient">Research Assistant</h1>', unsafe_allow_h
 st.markdown("<p style='color: #78909C; margin-bottom: 2rem; font-size: 1.1rem;'>Ask me anything about the indexed literature.</p>", unsafe_allow_html=True)
 
 API_URL = os.getenv("API_URL", "http://localhost:8000/api/v1/research/query")
+UPLOAD_URL = os.getenv(
+    "UPLOAD_URL",
+    "http://localhost:8000/api/v1/research/documents",
+)
+
+with st.sidebar:
+    st.subheader("Index documents")
+    uploaded_files = st.file_uploader(
+        "Upload PDF files",
+        type=["pdf"],
+        accept_multiple_files=True,
+    )
+    if uploaded_files and st.button("Index selected PDFs"):
+        for uploaded_file in uploaded_files:
+            with st.spinner(f"Indexing {uploaded_file.name}..."):
+                upload_response = requests.post(
+                    UPLOAD_URL,
+                    files={
+                        "file": (
+                            uploaded_file.name,
+                            uploaded_file.getvalue(),
+                            "application/pdf",
+                        )
+                    },
+                    timeout=600,
+                )
+            if upload_response.ok:
+                result = upload_response.json()
+                st.success(result["detail"])
+            else:
+                st.error(f"{uploaded_file.name}: {upload_response.text}")
 
 # 4. Initialize Chat History in Session State
 if "messages" not in st.session_state:
@@ -65,6 +96,14 @@ for msg in st.session_state.messages:
                 st.write("Graded chunks & synthesized context...")
         
         st.markdown(msg["content"])
+        for source in msg.get("sources", []):
+            location = source["source_file"]
+            if source.get("page"):
+                location += f" · page {source['page']}"
+            with st.expander(f"Source: {location}"):
+                if source.get("heading"):
+                    st.caption(source["heading"])
+                st.write(source.get("snippet", ""))
 
 # 6. Chat Input & Execution Logic
 if prompt := st.chat_input("Ask a research question..."):
@@ -76,6 +115,7 @@ if prompt := st.chat_input("Ask a research question..."):
 
     # 6b. Render the Assistant's response
     with st.chat_message("assistant"):
+        sources = []
         
         # The 'thinking' UI: Intentionally collapsed by default using expanded=False
         with st.status("Executing Agentic Pipeline...", expanded=False) as status:
@@ -90,21 +130,45 @@ if prompt := st.chat_input("Ask a research question..."):
                     st.write("Grading chunks & synthesizing context...")
                     data = response.json()
                     answer = data["answer"]
+                    sources = data.get("sources", [])
                     
                     status.update(label="Extraction Complete", state="complete")
                     
                     # Store response in session state
-                    st.session_state.messages.append({"role": "assistant", "content": answer, "thinking": True})
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": answer,
+                        "thinking": True,
+                        "sources": sources,
+                    })
                     
                 else:
                     status.update(label="Pipeline Failure", state="error")
                     answer = f"Error [{response.status_code}]: {response.text}"
-                    st.session_state.messages.append({"role": "assistant", "content": answer, "thinking": False})
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": answer,
+                        "thinking": False,
+                        "sources": [],
+                    })
                     
             except requests.exceptions.ConnectionError:
                 status.update(label="Connection Failed", state="error")
                 answer = "Backend unreachable. Ensure FastAPI is running on port 8000."
-                st.session_state.messages.append({"role": "assistant", "content": answer, "thinking": False})
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": answer,
+                    "thinking": False,
+                    "sources": [],
+                })
 
         # Render the final output below the thinking box
         st.markdown(answer)
+        for source in sources:
+            location = source["source_file"]
+            if source.get("page"):
+                location += f" · page {source['page']}"
+            with st.expander(f"Source: {location}"):
+                if source.get("heading"):
+                    st.caption(source["heading"])
+                st.write(source.get("snippet", ""))

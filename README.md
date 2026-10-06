@@ -8,7 +8,7 @@
 
 A research-paper question-answering prototype built around a cyclic LangGraph workflow. It combines hybrid dense and sparse retrieval, cross-encoder reranking, document relevance grading, query rewriting, grounded answer generation, and post-generation LLM checks.
 
-The project is designed for local experimentation and evaluation. It does not currently provide authentication, document uploads, citations in API responses, streaming, health checks, or production-grade guarantees against hallucination. When the retry limits are exhausted, the agent returns its best available answer.
+The project is designed for local experimentation and evaluation. It does not currently provide authentication or streaming. Query responses include the retrieved source filename, heading, snippet, and page when Docling exposes page provenance. When the retry limits are exhausted, the agent returns its best available answer.
 
 ## System Architecture
 
@@ -54,12 +54,12 @@ The API initializes the agent during FastAPI startup. Each request retrieves up 
 
 ## Quickstart With Docker
 
-Prerequisites: Docker Desktop with Compose support and a Groq API key.
+Prerequisites: Docker Desktop with Compose support and a Google Gemini API key.
 
 From the repository root, create `backend/.env` with:
 
 ```dotenv
-GROQ_API_KEY=your_api_key_here
+GOOGLE_API_KEY=your_api_key_here
 ```
 
 Then start the two application containers:
@@ -94,7 +94,7 @@ The DeepEval test also requires its separate package:
 pip install deepeval
 ```
 
-Set `GROQ_API_KEY` in `backend/.env`, then run the indexing script from the repository root:
+Set `GOOGLE_API_KEY` in `backend/.env`, then run the indexing script from the repository root:
 
 ```bash
 python -m backend.app.retrieval.vector_store
@@ -127,27 +127,90 @@ Request bodies must contain a query of at least five characters:
 }
 ```
 
-Successful responses contain only the final answer:
+Successful responses contain the final answer and the sources used by the retrieval pipeline:
 
 ```json
 {
-  "answer": "..."
+  "answer": "...",
+  "sources": [
+    {
+      "source_file": "attention_is_all_you_need.pdf",
+      "heading": "Optimization",
+      "page": 5,
+      "snippet": "..."
+    }
+  ]
 }
 ```
 
-Typical errors are `422` for invalid request data, `503` when the startup agent is unavailable, and `500` when graph execution fails. There is currently no upload, indexing, citation, trace, or health endpoint.
+`page` is optional because it depends on provenance metadata emitted by the parser. Typical errors are `422` for invalid request data, `503` when the startup agent is unavailable, and `500` when graph execution fails. There is currently no streaming endpoint.
+
+### `POST /api/v1/research/documents`
+
+Upload one PDF using the multipart field `file`. The document is parsed with the current Docling pipeline and indexed in the current Qdrant collection. Existing documents are detected by filename and are not indexed twice.
+
+Successful responses contain the filename and number of indexed chunks:
+
+```json
+{
+  "source_file": "manual.pdf",
+  "indexed": true,
+  "chunks_indexed": 12,
+  "detail": "Indexed 12 chunks."
+}
+```
+
+## Read-Only MCP Server
+
+The merged project exposes the current Qdrant knowledge base through a read-only MCP server. It provides:
+
+- `query_documentation(query, num_results)`: hybrid-search indexed documents and return source metadata and snippets.
+- `list_indexed_documents()`: list indexed source filenames.
+
+Run it from the `backend` directory after installing backend dependencies:
+
+```bash
+cd backend
+python -m app.mcp.server
+```
+
+The MCP server does not expose arbitrary Python execution, shell commands, filesystem writes, package installation, or unrestricted network access.
 
 ## Evaluation
 
-`tests/test_agent.py` is a live integration/evaluation test rather than a deterministic unit test. It initializes the real agent, uses the indexed Qdrant data and downloaded embedding/reranker models, and evaluates the result with DeepEval using a Groq judge. Both metrics use a passing threshold of `0.7`; scores depend on the model response and runtime state.
+`tests/test_agent.py` is a live integration/evaluation test rather than a deterministic unit test. It initializes the real agent, uses the indexed Qdrant data and downloaded embedding/reranker models, and evaluates the result with DeepEval using a Gemini judge. Both metrics use a passing threshold of `0.7`; scores depend on the model response and runtime state. It requires `GOOGLE_API_KEY`, network access, model downloads, and an indexed Qdrant collection.
 
-Run it from the repository root after indexing the data and configuring `GROQ_API_KEY`:
+Run it from the repository root after indexing the data and configuring `GOOGLE_API_KEY`:
 
 ```bash
 pytest tests/test_agent.py
 ```
 
-The test requires network access for the Groq API and model downloads. No fixed score is guaranteed by the repository.
+The test requires network access for the Google API and model downloads. No fixed score is guaranteed by the repository. The deterministic API, citation, indexing, and MCP tests do not require an API key.
+
+## LLM Provider Configuration
+
+Gemini is the default provider for both answer generation and critique:
+
+```dotenv
+GOOGLE_API_KEY=your_key
+GOOGLE_MODEL=gemini-2.5-flash
+GENERATION_PROVIDER=google
+CRITIQUE_PROVIDER=google
+```
+
+The pipeline also supports a dual-provider setup. In this mode, Gemini generates and rewrites answers while Groq independently grades relevance, grounding, and answer utility:
+
+```dotenv
+GOOGLE_API_KEY=your_gemini_key
+GROQ_API_KEY=your_groq_key
+GOOGLE_MODEL=gemini-2.5-flash
+GROQ_MODEL=openai/gpt-oss-20b
+GENERATION_PROVIDER=google
+CRITIQUE_PROVIDER=groq
+```
+
+This separates generation from evaluation so the same model does not approve its own answer. Switch both provider settings to `groq` for a Groq-only setup. Keep all real keys in the ignored `backend/.env`; never commit them or place them in documentation.
 
 ## Repository Structure
 

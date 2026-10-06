@@ -2,3 +2,12 @@
 .env
 .env.*
 !.env.example
+
+# Python and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local evaluation and vector-store runtime state
+.deepeval/
+data/qdrant_db/

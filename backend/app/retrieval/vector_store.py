@@ -16,7 +16,7 @@ if str(backend_dir) not in sys.path:
 from app.engine.parser import IngestionEngine
 
 class HybridVectorStore:
-    def __init__(self, collection_name: str = "research_papers"):
+    def __init__(self, collection_name: str = "ai_research_papers"):
         self.collection_name = collection_name
         
         # Robust path resolution: prioritize ENV variable, fallback to local relative path
@@ -52,7 +52,11 @@ class HybridVectorStore:
                 }
             )
 
-    def index_document(self, file_path: str):
+    def index_document(self, file_path: str, source_file: str | None = None):
+        source_file = source_file or os.path.basename(file_path)
+        if source_file in self.get_indexed_files():
+            return 0
+
         engine = IngestionEngine()
         _, doc_chunks = engine.parse_and_chunk(file_path)
         print(f"[*] Extracted {len(doc_chunks)} chunks. Generating explicit embeddings...")
@@ -65,9 +69,21 @@ class HybridVectorStore:
                 continue
             texts.append(text)
             heading = chunk.meta.headings[0] if chunk.meta.headings else "General"
+            page = self._get_page_number(chunk)
             
             # Save the text in payload so we can retrieve it
-            payloads.append({"source_file": os.path.basename(file_path), "heading": heading, "text": text})
+            payload = {
+                "source_file": source_file,
+                "heading": heading,
+                "text": text,
+            }
+            if page is not None:
+                payload["page"] = page
+            payloads.append(payload)
+
+        if not texts:
+            print("[!] No text chunks were extracted; nothing was indexed.")
+            return 0
 
         # Generate vectors mathematically
         dense_vectors = list(self.dense_model.embed(texts))
@@ -92,6 +108,35 @@ class HybridVectorStore:
 
         self.client.upsert(collection_name=self.collection_name, points=points)
         print(f"[+] Successfully indexed {len(points)} chunks.")
+        return len(points)
+
+    def get_indexed_files(self) -> set[str]:
+        """Return source filenames currently represented in the collection."""
+        points, _ = self.client.scroll(
+            collection_name=self.collection_name,
+            limit=10000,
+            with_payload=["source_file"],
+            with_vectors=False,
+        )
+        return {
+            source_file
+            for point in points
+            if (source_file := (point.payload or {}).get("source_file"))
+        }
+
+    @staticmethod
+    def _get_page_number(chunk) -> int | None:
+        """Read the first provenance page when Docling exposes it."""
+        doc_items = getattr(getattr(chunk, "meta", None), "doc_items", None)
+        if not doc_items:
+            return None
+
+        provenance = getattr(doc_items[0], "prov", None)
+        if not provenance:
+            return None
+
+        page_number = getattr(provenance[0], "page_no", None)
+        return page_number if isinstance(page_number, int) and page_number >= 1 else None
 
     def hybrid_search(self, query: str, limit: int = 5):
         print(f"\n[*] Executing Hybrid RRF Search for: '{query}'")
