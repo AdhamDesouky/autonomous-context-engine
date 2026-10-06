@@ -256,15 +256,4 @@ This separates generation from evaluation so the same model does not approve its
 ├── tests/                          # Deterministic and live evaluation tests
 ├── docker-compose.yml
 └── README.md
-```
 
-## Legacy Project Status
-
-The earlier `autonomous_context_engine` project was used as a migration source.
-Its useful capabilities were adapted into this repository, while the current
-ACE architecture uses FastAPI, embedded Qdrant, Docling, LangGraph, provider
-configuration, citations, and read-only MCP. The legacy project still contains
-an independent Chroma database and source tree, so keep it as an archive until
-you have copied any remaining documents or history you want to preserve.
-After that archive check, it is safe to delete the legacy working directory;
-do not delete it as a prerequisite for renaming this project.
