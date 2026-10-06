@@ -33,7 +33,7 @@ flowchart TD
 
 ## Key Features
 
-- Hybrid dense and sparse retrieval using embedded Qdrant
+- Hybrid dense and sparse retrieval with Qdrant
 - Cross-encoder reranking of retrieved chunks
 - LLM-based relevance, grounding, and answer grading
 - Automatic query rewriting with retry limits
@@ -118,6 +118,7 @@ Upload one PDF using the multipart field `file`. It is parsed and indexed in Qdr
 Run from the `backend` directory:
 
 ```bash
+cd backend
 python -m app.mcp.server
 ```
 
@@ -146,7 +147,7 @@ Never commit real API keys.
 
 ## Evaluation
 
-After indexing documents and configuring an API key:
+After indexing the data and configuring an API key:
 
 ```bash
 pytest tests/test_agent.py
@@ -157,14 +158,15 @@ The live evaluation requires network access, provider quota, indexed data, and d
 ## Repository Structure
 
 ```text
-backend/app/agent/graph.py            # LangGraph workflow
-backend/app/core/llm.py               # LLM providers and failover
-backend/app/engine/parser.py          # PDF parsing and chunking
-backend/app/mcp/server.py             # Read-only MCP tools
-backend/app/retrieval/vector_store.py # Qdrant retrieval and indexing
-backend/app/main.py                   # FastAPI application
-frontend/app.py                       # Streamlit UI
-data/                                # PDFs and Qdrant data
-tests/                               # Test suite
-docker-compose.yml                   # Container configuration
+backend/app/agent/graph.py
+backend/app/core/llm.py
+backend/app/engine/parser.py
+backend/app/mcp/server.py
+backend/app/retrieval/vector_store.py
+backend/app/main.py
+frontend/app.py
+data/
+tests/
+docker-compose.yml
+README.md
 ```
