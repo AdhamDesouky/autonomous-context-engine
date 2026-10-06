@@ -16,19 +16,25 @@ if str(backend_dir) not in sys.path:
 from app.engine.parser import IngestionEngine
 
 class HybridVectorStore:
-    def __init__(self):
-        self.base_dir = Path(__file__).resolve().parent.parent.parent.parent
-        self.db_path = self.base_dir / "data" / "qdrant_db"
-        self.db_path.mkdir(parents=True, exist_ok=True)
-        self.collection_name = "ai_research_papers"
+    def __init__(self, collection_name: str = "research_papers"):
+        self.collection_name = collection_name
         
-        print(f"[*] Initializing Qdrant Local Storage at {self.db_path}")
-        self.client = QdrantClient(path=str(self.db_path))
+        # Robust path resolution: prioritize ENV variable, fallback to local relative path
+        env_path = os.getenv("QDRANT_STORAGE_PATH")
+        if env_path:
+            self.storage_path = Path(env_path)
+        else:
+            # Local fallback: backend/app/retrieval -> root / data / qdrant_db
+            self.storage_path = Path(__file__).resolve().parents[3] / "data" / "qdrant_db"
+            
+        print(f"[*] Initializing Qdrant Local Storage at {self.storage_path}")
+        self.storage_path.mkdir(parents=True, exist_ok=True)
         
         # --- MLOps Decoupling: We manage Compute (Embeddings) separately from Storage ---
         print("[*] Initializing FastEmbed Compute Models...")
         self.dense_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
         self.sparse_model = SparseTextEmbedding(model_name="prithivida/Splade_PP_en_v1")
+        self.client = QdrantClient(path=str(self.storage_path))
 
         # Initialize Collection Schema strictly if it doesn't exist
         if not self.client.collection_exists(self.collection_name):

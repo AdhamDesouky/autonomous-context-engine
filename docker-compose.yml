@@ -13,6 +13,7 @@ services:
       - ./backend/.env
     environment:
       - PYTHONPATH=/app
+      - QDRANT_STORAGE_PATH=/app/data/qdrant_db
 
   frontend:
     build:
